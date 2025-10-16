@@ -1,6 +1,5 @@
-streamlit
-pandas
+Flask
+requests
 python-docx
 PyMuPDF
-requests==2.31.0
-google-search-results
+serpapi
