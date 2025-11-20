@@ -172,14 +172,16 @@ with tab1:
     # --- [修改] Tab 1: 處理文件按鈕邏輯 ---
     if uploaded_file:
         st.divider()
-        
+
         if st.button("🚀 開始處理文件", type="primary", use_container_width=True):
             with st.spinner("正在解析文件..."):
+                file_bytes = uploaded_file.read()
+
                 if uploaded_file.name.endswith(".docx"):
-                    paragraphs = extract_paragraphs_from_docx(uploaded_file)
+                    paragraphs = extract_paragraphs_from_docx(BytesIO(file_bytes))
                 else:
-                    paragraphs = extract_paragraphs_from_pdf(uploaded_file)
-                
+                    paragraphs = extract_paragraphs_from_pdf(BytesIO(file_bytes))
+
                 st.success(f"✅ 成功提取 {len(paragraphs)} 個段落")
             
             # --- [重大修改] 使用 Gemini 進行解析 ---
@@ -226,71 +228,89 @@ with tab2:
         st.info(f"共有 {len(st.session_state.references)} 條參考文獻待檢查")
 
         # --- [修改] 單筆檢查函式 V2 ---
-        def check_single_reference_v2(idx, ref_object, check_opts, api_keys, similarity_threshold):
+        def check_single_reference_v3(idx, ref_object, check_opts, api_keys, similarity_threshold):
             """
-            使用從 Gemini 預先提取的資料來執行 API 檢查。
+            使用從 Gemini 預先提取的資料來執行 API 檢查，固定順序，找到即停止。
+            對 Website 或 Other 類型標註須人工查詢。
             """
             result = {
                 "index": idx,
                 "text": ref_object.get("text", "N/A"),
-                "title": ref_object.get("title"),      # 從 Gemini 獲取
-                "doi": ref_object.get("doi"),        # 從 Gemini 獲取
-                "style": ref_object.get("style", "Unknown"), # 從 Gemini 獲取
-                "url": ref_object.get("url"),        # [新增] 從 Gemini 獲取 URL
+                "title": ref_object.get("title"),
+                "authors": ref_object.get("authors"),
+                "venue": ref_object.get("venue"),
+                "year": ref_object.get("year"),
+                "doi": ref_object.get("doi"),
+                "url": ref_object.get("url"),
+                "style": ref_object.get("style", "Other"),
+                "citation_format": ref_object.get("citation_format", "Other"),
                 "sources": {}
             }
 
-            # Crossref (DOI)
-            if result["doi"] and check_opts["crossref"]:
+            # 如果 style 是 Website 或 Other，直接標記須人工查詢
+            if result["style"] in ["Website", "Other"]:
+                result["sources"]["人工查詢"] = {"status": "⚠️ 須人工查詢", "url": None}
+                return result
+
+            # 固定順序搜尋
+            found = False
+
+            # 1️⃣ Crossref (DOI)
+            if not found and result["doi"] and check_opts["crossref"]:
                 title, url = search_crossref_by_doi(result["doi"])
                 if url:
                     result["sources"]["Crossref"] = {"status": "✅ 找到", "url": url}
+                    found = True
 
-            # 其餘以標題搜尋
-            if result["title"]:
-                if check_opts["scopus"] and api_keys.get("scopus"):
-                    scopus_url = search_scopus_by_title(result["title"], api_keys["scopus"])
-                    if scopus_url:
-                        result["sources"]["Scopus"] = {"status": "✅ 找到", "url": scopus_url}
+            # 2️⃣ Scopus (標題)
+            if not found and result["title"] and check_opts["scopus"] and api_keys.get("scopus"):
+                scopus_url = search_scopus_by_title(result["title"], api_keys["scopus"])
+                if scopus_url:
+                    result["sources"]["Scopus"] = {"status": "✅ 找到", "url": scopus_url}
+                    found = True
 
-                if check_opts["scholar"] and api_keys.get("serpapi"):
-                    scholar_url, scholar_status = search_scholar_by_title(
-                        result["title"], api_keys["serpapi"], similarity_threshold
-                    )
-                    status_map = {
-                        "match": "✅ 完全匹配",
-                        "similar": "⚠️ 相似匹配",
-                        "no_result": "❌ 未找到",
-                        "error": "❌ 查詢錯誤"
-                    }
-                    result["sources"]["Google Scholar"] = {
-                        "status": status_map.get(scholar_status, "❌ 未知"),
-                        "url": scholar_url
-                    }
+            # 3️⃣ OpenAlex (標題)
+            if not found and result["title"] and check_opts["openalex"]:
+                oa_url = search_openalex_by_title(result["title"])
+                if oa_url:
+                    result["sources"]["OpenAlex"] = {"status": "✅ 找到", "url": oa_url}
+                    found = True
 
-                if check_opts["s2"]:
-                    s2_url = search_s2_by_title(result["title"])
-                    if s2_url:
-                        result["sources"]["Semantic Scholar"] = {"status": "✅ 找到", "url": s2_url}
+            # 4️⃣ Semantic Scholar (標題)
+            if not found and result["title"] and check_opts["s2"]:
+                s2_url = search_s2_by_title(result["title"])
+                if s2_url:
+                    result["sources"]["Semantic Scholar"] = {"status": "✅ 找到", "url": s2_url}
+                    found = True
 
-                if check_opts["openalex"]:
-                    oa_url = search_openalex_by_title(result["title"])
-                    if oa_url:
-                        result["sources"]["OpenAlex"] = {"status": "✅ 找到", "url": oa_url}
+            # 5️⃣ Google Scholar (標題)
+            if not found and result["title"] and check_opts["scholar"] and api_keys.get("serpapi"):
+                scholar_url, scholar_status = search_scholar_by_title(
+                    result["title"], api_keys["serpapi"], similarity_threshold
+                )
+                status_map = {
+                    "match": "✅ 完全匹配",
+                    "similar": "⚠️ 相似匹配",
+                    "no_result": "❌ 未找到",
+                    "error": "❌ 查詢錯誤"
+                }
+                result["sources"]["Google Scholar"] = {
+                    "status": status_map.get(scholar_status, "❌ 未知"),
+                    "url": scholar_url
+                }
 
-            # [新增] 補救搜尋邏輯
+            # 若以上皆未找到，並啟用補救搜尋
             found_sources = any("✅" in s.get("status", "") for s in result["sources"].values())
             if not found_sources and enable_remedial and api_keys.get("serpapi"):
-                remedial_url, remedial_status = search_scholar_by_ref_text(
-                    result["text"], api_keys["serpapi"]
-                )
+                remedial_url, remedial_status = search_scholar_by_ref_text(result["text"], api_keys["serpapi"])
                 if remedial_status == "remedial":
                     result["sources"]["Google Scholar (補救)"] = {
                         "status": "✅ 補救成功",
                         "url": remedial_url
                     }
-            
+
             return result
+
 
         # --- [修改] 開始檢查按鈕 ---
         if st.button("🔍 開始檢查所有引用", type="primary", use_container_width=True):
@@ -325,7 +345,7 @@ with tab2:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
-                        check_single_reference_v2, 
+                        check_single_reference_v3, 
                         idx + 1, 
                         ref_object, 
                         check_opts, 
@@ -379,7 +399,7 @@ with tab2:
             for result in st.session_state.results:
                 verified_count = sum(1 for s in result["sources"].values() if "✅" in s["status"])
                 
-                # [修改] 篩選邏輯，以 "active_check_count" 為基準
+                # 篩選邏輯，以 active_check_count 為基準
                 if filter_option == "已驗證" and verified_count == 0:
                     continue
                 elif filter_option == "未驗證" and verified_count > 0:
@@ -387,33 +407,38 @@ with tab2:
                 elif filter_option == "部分驗證" and (verified_count == 0 or verified_count == active_check_count):
                     continue
 
-
                 with st.expander(f"📄 引用 {result['index']}", expanded=False):
                     st.markdown(f'<div class="ref-item">{result["text"]}</div>', unsafe_allow_html=True)
 
+                    # 顯示詳細欄位
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write(f"**📰 標題**: {result['title'] or '❌ (Gemini 無法擷取)'}")
-                        st.write(f"**🏷️ 格式 (Gemini)**: {result['style']}")
+                        st.write(f"**📰 標題**: {result.get('title', '❌ (Gemini 無法擷取)')}")
+                        st.write(f"**👤 作者**: {result.get('authors', 'N/A')}")
+                        st.write(f"**📰 期刊/會議**: {result.get('venue', 'N/A')}")
+                        st.write(f"**📅 年份**: {result.get('year', 'N/A')}")
                     with col2:
-                        st.write(f"**🔍 DOI**: {result['doi'] or '❌ (Gemini 無)'}")
-                        # [FIX] 使用 active_check_count
+                        st.write(f"**🏷️ 格式 (Gemini)**: {result.get('style', 'Other')}")
+                        st.write(f"**🔖 引用格式**: {result.get('citation_format', 'Other')}")
+                        st.write(f"**🔍 DOI**: {result.get('doi', '❌ (Gemini 無)')}")
                         st.write(f"**✅ 驗證數**: {verified_count}/{active_check_count}")
 
-                    # [NEW] 顯示 Gemini 提取的 URL
+                    # 顯示 Gemini 提取的 URL
                     gemini_url = result.get("url")
                     if gemini_url:
                         st.write(f"**🔗 來源網址 (Gemini)**: {gemini_url}")
 
-                    if result["sources"]:
+                    # 顯示各資料來源檢查結果
+                    if result.get("sources"):
                         st.write("**🔗 資料來源檢查結果**:")
                         for source, info in result["sources"].items():
-                            status_class = "badge-success" if "✅" in info["status"] else "badge-warning"
-                            link = f'[🔗 連結]({info["url"]})' if info.get("url") else ""
+                            status_class = "badge-success" if "✅" in info.get("status", "") else "badge-warning"
+                            link = f'[🔗 連結]({info.get("url")})' if info.get("url") else ""
                             st.markdown(
-                                f'<span class="status-badge {status_class}">{source}: {info["status"]}</span> {link}',
+                                f'<span class="status-badge {status_class}">{source}: {info.get("status", "未知")}</span> {link}',
                                 unsafe_allow_html=True
                             )
+
 
 
 # ========== Tab 3: 統計報告 ==========
