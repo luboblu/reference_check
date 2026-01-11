@@ -218,6 +218,7 @@ if st.session_state.results:
     st.divider()
     st.markdown("### 📊 第二步：查核結果與報表下載")
     
+    # 統計卡片
     total_refs = len(st.session_state.results)
     verified_db = sum(1 for r in st.session_state.results if r.get('found_at_step') and "6." not in r.get('found_at_step'))
     failed_refs = total_refs - verified_db
@@ -227,6 +228,7 @@ if st.session_state.results:
     col2.metric("資料庫匹配成功", verified_db)
     col3.metric("需人工確認/修正", failed_refs, delta_color="inverse")
 
+    # 下載報表（維持原樣）
     df_export = pd.DataFrame([{
         "ID": r['id'],
         "狀態": r['found_at_step'] if r['found_at_step'] else "未找到",
@@ -236,7 +238,6 @@ if st.session_state.results:
     } for r in st.session_state.results])
 
     csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
-    
     st.download_button(
         label="📥 下載完整查核報告 (Excel 可開 CSV)",
         data=csv_data,
@@ -245,27 +246,60 @@ if st.session_state.results:
         use_container_width=True
     )
 
+    # ========== 4. 查核清單明細 (新增過濾功能) ==========
     st.markdown("---")
-    st.markdown("#### ⚠️ 重點檢查清單 (資料庫未匹配)")
+    st.markdown("#### 🔍 查核清單明細")
     
-    error_items = [r for r in st.session_state.results if not r.get('found_at_step') or "Failed" in r.get('found_at_step')]
-    if error_items:
-        for item in error_items:
-            with st.expander(f"❌ ID {item['id']}：{item['text'][:80]}..."):
+    # 同學要求的五種過濾狀態
+    filter_option = st.radio(
+        "顯示篩選項目：",
+        ["全部顯示", "✅ 資料庫驗證", "🌐 網站有效來源", "⚠️ 網站 (連線失敗)", "❌ 未找到結果"],
+        horizontal=True
+    )
+
+    # 執行過濾邏輯
+    filtered_results = []
+    for r in st.session_state.results:
+        step = r.get('found_at_step', '')
+        if filter_option == "全部顯示":
+            filtered_results.append(r)
+        elif filter_option == "✅ 資料庫驗證" and step and "6." not in step and "Failed" not in step:
+            filtered_results.append(r)
+        elif filter_option == "🌐 網站有效來源" and "6." in step and "Failed" not in step:
+            filtered_results.append(r)
+        elif filter_option == "⚠️ 網站 (連線失敗)" and "Failed" in step:
+            filtered_results.append(r)
+        elif filter_option == "❌ 未找到結果" and not step:
+            filtered_results.append(r)
+
+    # 顯示列表
+    if not filtered_results:
+        st.info(f"目前沒有符合「{filter_option}」的項目。")
+    else:
+        for item in filtered_results:
+            step = item.get('found_at_step', '')
+            # 根據狀態決定圖示
+            if not step:
+                status_icon = "❌"
+            elif "Failed" in step:
+                status_icon = "⚠️"
+            elif "6." in step:
+                status_icon = "🌐"
+            else:
+                status_icon = "✅"
+
+            with st.expander(f"{status_icon} ID {item['id']}：{item['text'][:80]}..."):
+                st.markdown(f"**查核結果：** `{step if step else '資料庫未匹配'}`")
                 st.markdown(f"**原始內容：**")
                 st.markdown(f"<div class='ref-box'>{item['text']}</div>", unsafe_allow_html=True)
-                if item.get("suggestion"):
-                    st.warning(f"💡 系統建議：我們在模糊搜尋中找到了相似文獻，[請點此手動確認]({item['suggestion']})")
-                else:
-                    st.info("提示：建議檢查引文的標題拼寫、年份或 DOI 是否有誤。")
-    else:
-        st.success("🎉 非常完美！所有引文均在資料庫中匹配成功。")
-
-    with st.expander("🔍 查看所有驗證詳情 (包含成功項目)"):
-        for res in st.session_state.results:
-            st.write(f"**ID {res['id']}:** {res['found_at_step'] if res['found_at_step'] else '❌ Not Found'}")
-            if res['sources']:
-                for s, l in res['sources'].items(): st.caption(f"  - {s}: {l}")
+                
+                if item['sources']:
+                    st.markdown("**來源連結：**")
+                    for src, link in item['sources'].items():
+                        st.write(f"- {src}: {link}")
+                
+                if (not step or "Failed" in step) and item.get("suggestion"):
+                    st.warning(f"💡 模糊搜尋建議：[請點此手動確認相似文獻]({item['suggestion']})")
 
 else:
     st.info("💡 目前尚無結果。請在上方輸入框貼上文獻，並點擊按鈕開始。")
