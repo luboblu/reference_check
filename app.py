@@ -274,7 +274,10 @@ if st.session_state.results:
     # 執行過濾邏輯
     filtered_results = []
     for r in st.session_state.results:
-        step = r.get('found_at_step', '')
+        # 【修正重點】確保 step 絕對是字串，即使原始資料是 None 也會變為空字串 ""
+        raw_step = r.get('found_at_step')
+        step = str(raw_step) if raw_step is not None else ""
+        
         if filter_option == "全部顯示":
             filtered_results.append(r)
         elif filter_option == "✅ 資料庫驗證" and step and "6." not in step and "Failed" not in step:
@@ -283,7 +286,7 @@ if st.session_state.results:
             filtered_results.append(r)
         elif filter_option == "⚠️ 網站 (連線失敗)" and "Failed" in step:
             filtered_results.append(r)
-        elif filter_option == "❌ 未找到結果" and not step:
+        elif filter_option == "❌ 未找到結果" and (not step or step == ""):
             filtered_results.append(r)
 
     # 顯示列表
@@ -291,7 +294,9 @@ if st.session_state.results:
         st.info(f"目前沒有符合「{filter_option}」的項目。")
     else:
         for item in filtered_results:
-            step = item.get('found_at_step', '')
+            raw_step = item.get('found_at_step')
+            step = str(raw_step) if raw_step is not None else ""
+            
             # 根據狀態決定圖示
             if not step:
                 status_icon = "❌"
@@ -307,11 +312,12 @@ if st.session_state.results:
                 st.markdown(f"**原始內容：**")
                 st.markdown(f"<div class='ref-box'>{item['text']}</div>", unsafe_allow_html=True)
                 
-                if item['sources']:
+                if item.get('sources'):
                     st.markdown("**來源連結：**")
                     for src, link in item['sources'].items():
                         st.write(f"- {src}: {link}")
                 
+                # 若沒找到或失敗，顯示補救建議
                 if (not step or "Failed" in step) and item.get("suggestion"):
                     st.warning(f"💡 模糊搜尋建議：[請點此手動確認相似文獻]({item['suggestion']})")
 
