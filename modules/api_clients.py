@@ -68,26 +68,32 @@ def _call_external_api_with_retry(url: str, params: dict, headers=None):
 # ========== 1. Crossref (含校驗功能) ==========
 
 def search_crossref_by_doi(doi, target_title=None):
-    """
-    透過 DOI 搜尋，並核對回傳標題是否與目標吻合
-    """
-    if not doi: return None, None, "Empty DOI"
+    if not doi:
+        return None, "Empty DOI"
+
     clean_doi = doi.strip(' ,.;)]}>')
     url = f"https://api.crossref.org/works/{clean_doi}"
+
     try:
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             item = response.json().get("message", {})
             titles = item.get("title", [])
             res_title = titles[0] if titles else ""
-            
-            # 防誤判：標題不對就攔截
+
             if target_title and not _is_match(target_title, res_title):
-                return None, None, f"DOI Title Mismatch: {res_title[:40]}..."
-                
-            return res_title, item.get("URL") or f"https://doi.org/{clean_doi}", "OK"
-        return None, None, f"HTTP {response.status_code}"
-    except: return None, None, "Conn Error"
+                return None, "Title mismatch"
+
+            return {
+                "title": res_title,
+                "authors": item.get("author", []),
+                "year": item.get("issued", {}).get("date-parts", [[None]])[0][0],
+                "url": item.get("URL") or f"https://doi.org/{clean_doi}"
+            }, "OK"
+    except:
+        pass
+
+    return None, "Error"
 
 def search_crossref_by_text(title, author=None):
     """
