@@ -58,7 +58,6 @@ def format_name_field(data):
         return "; ".join(names_list)
     except: return str(data)
 
-# --- 這裡已替換為您指定的加強版 refine_parsed_data ---
 def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
     raw_text = item.get('text', '').strip()
@@ -69,8 +68,40 @@ def refine_parsed_data(parsed_item):
             item[key] = item[key].strip(' ,.;)]}>')
 
     title = item.get('title', '')
-    
-    # 2. 標題補救機制
+
+    # =========================================================
+    # [NEW] Patch 1: 修復 "第二作者殘留" 問題
+    # 針對: "& Heinzl, A.(2021). Real Title" 這種解析錯誤
+    # =========================================================
+    if title and (title.startswith('&') or title.lower().startswith('and ')):
+        # Regex 邏輯：
+        # ^&             -> 以 & 開頭
+        # .+?            -> 中間任何非年份的字 (人名)
+        # \(?\d{4}\)?    -> 抓到年份 (例如 2021 或 (2021))
+        # [\.\s]+        -> 年份後的句點或空白
+        # (.*)           -> 抓取剩餘的真實標題
+        fix_match = re.search(r'^&(?:amp;)?\s*[^0-9]+?\(?\d{4}\)?[\.\s]+(.*)', title)
+        if fix_match:
+            cleaned_title = fix_match.group(1).strip()
+            # 確保切完剩下的長度夠長，才替換 (避免切壞)
+            if len(cleaned_title) > 5:
+                title = cleaned_title
+                item['title'] = title
+
+    # =========================================================
+    # [NEW] Patch 2: 強力去噪 (針對 "2024. Title" 或 "Title. arXiv")
+    # =========================================================
+    if title:
+        # 去掉開頭的 4 位數字年份與標點 (例如 "2024. ")
+        title = re.sub(r'^\s*\d{4}[\.\s]+', '', title)
+        
+        # 去掉結尾的 arXiv, Available at... 等常見雜訊
+        title = re.sub(r'(?i)\.?\s*arXiv.*$', '', title)
+        title = re.sub(r'(?i)\.?\s*Available.*$', '', title)
+        
+        item['title'] = title
+
+    # 2. 標題補救機制 (針對標題為空 或 清洗後變很短的情況)
     if not title or len(title) < 5:
         # [Pattern A] 針對 "縮寫: 完整標題" (如 StyleTTS 2)
         abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
@@ -84,26 +115,20 @@ def refine_parsed_data(parsed_item):
                     item['title'] = str(val).strip()
                     break
 
-        # =========================================================
-        # [Pattern C] 新增補救：年份定位法 (針對您的截圖案例)
-        # 邏輯：如果標題還是空的，但我們知道年份是 "2024"，那就把 "2024" 後面的字當作標題
-        # =========================================================
+        # [Pattern C] 年份定位法 (使用年份去原文找標題)
         if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
-            # 抓出年份字串 (例如 "2024")
             year_str = str(item['date'])[0:4] 
             if year_str.isdigit():
-                # Regex: 找到年份 -> 忽略標點(.) -> 抓取後面所有內容
-                # 例子: "..., 2024. Corrective RAG. arXiv." -> 抓到 "Corrective RAG. arXiv."
+                # 抓取年份後面的內容
                 fallback_match = re.search(rf'{year_str}\W+\s*(.+)', raw_text)
                 if fallback_match:
                     candidate = fallback_match.group(1).strip()
-                    # 簡單清洗：去掉結尾常見的 arXiv 或 URL
+                    # 這裡也要做一次雜訊清洗，確保補救回來的標題乾淨
                     candidate = re.sub(r'(?i)\.?\s*arXiv.*$', '', candidate)
                     candidate = re.sub(r'(?i)\.?\s*Available.*$', '', candidate)
                     
                     if len(candidate) > 5:
                         item['title'] = candidate.strip(' .')
-        # =========================================================
 
     # 3. DOI 提取 (保持不變)
     url_val = item.get('url', '')
@@ -112,11 +137,11 @@ def refine_parsed_data(parsed_item):
         if doi_match:
             item['doi'] = doi_match.group(1).strip('.')
 
+    # 4. 作者與編輯格式化
     if item.get('authors'): item['authors'] = format_name_field(item['authors'])
     if item.get('editor'): item['editor'] = format_name_field(item['editor'])
     
     return item
-
 
 def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_key):
     ref = refine_parsed_data(raw_ref)

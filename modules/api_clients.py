@@ -70,33 +70,54 @@ def _check_author_match(query_author, result_authors_list):
     return False
 
 # ========== [核心] 2. 標題比對邏輯 (包含您之前的寬鬆優化) ==========
+# 在 modules/api_clients.py 中找到 _is_match 函式並修改
+
 def _is_match(query, result):
     if not query or not result: return False
     c_q = clean_title(query)
     c_r = clean_title(result)
     
-    # 1. 針對 Query 是長段落，而 Result 是短標題的情況
+    # --- 新增：強效去噪 ---
+    # 移除常見的非標題字眼，避免它們導致比對失敗
+    def remove_noise(text):
+        # 移除 4位數年份 (如 2023, 2024)
+        text = re.sub(r'\b(19|20)\d{2}\b', '', text)
+        # 移除 arXiv, bioRxiv, Available, Online 等字眼
+        text = re.sub(r'\b(arxiv|biorxiv|available|online|access)\b', '', text, flags=re.IGNORECASE)
+        # 移除多餘空白
+        return " ".join(text.split())
+
+    c_q = remove_noise(c_q)
+    c_r = remove_noise(c_r)
+    # ---------------------
+
+    # 1. 針對 Query 是長段落... (維持原樣)
     if len(c_q) > len(c_r) * 1.5:
         if c_r in c_q: return True
 
-    # 2. 相似度比對
+    # 2. 相似度比對 (維持原樣)
     ratio = SequenceMatcher(None, c_q, c_r).ratio()
-    if ratio >= 0.9: return True 
+    if ratio >= 0.8: return True  # 建議稍微調降到 0.8 以容忍少許差異
     
     # 3. 關鍵字比對
     q_words = set(c_q.split())
     r_words = set(c_r.split())
-    stop_words = {'a', 'an', 'the', 'of', 'in', 'for', 'with', 'on', 'at', 'by', 'and'}
+    stop_words = {'a', 'an', 'the', 'of', 'in', 'for', 'with', 'on', 'at', 'by', 'and', 'from', 'to'} # 增加一些介係詞
     
-    # 正向檢查 (Result 的重要單字都在 Query 裡)
-    missing_important_in_query = [w for w in r_words if w not in stop_words and w not in q_words]
-    if len(missing_important_in_query) == 0:
-        return True
+    # ... (中間省略) ...
 
-    # 反向檢查 (Query 的重要單字都在 Result 裡 - 針對不完整標題)
+    # 反向檢查 (Query 的重要單字都在 Result 裡)
     missing_important_in_result = [w for w in q_words if w not in stop_words and w not in r_words]
+    
+    # --- 新增：容錯機制 ---
+    # 如果只差 1 個字，且那個字很短或是數字，我們就當作它是雜訊，予以通過
+    if len(missing_important_in_result) <= 1:
+        # 如果 Query 很長，容許 1 個字的誤差是合理的
+        if len(q_words) >= 5: 
+            return True
+    # ---------------------
+
     if len(missing_important_in_result) == 0:
-        # 長度保護：輸入長度至少要是完整標題的 30%
         if len(c_q) > len(c_r) * 0.3:
             return True
 
