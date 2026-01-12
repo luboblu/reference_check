@@ -194,18 +194,72 @@ def search_scopus_by_title(title, api_key, author=None):
 
 # ========== 3. Google Scholar (無作者欄位，維持原樣) ==========
 
-def search_scholar_by_title(title, api_key):
+
+def search_scholar_by_title(title, api_key, author=None, raw_text=None):
+    """
+    階層式搜尋策略 (適應混合格式)：
+    1. 清洗作者：
+       - 有 "et al" -> 刪除 "et al" 保留人名。
+       - 是全名 -> 保留原樣。
+    2. 第一關：標題 + 清洗後的人名。
+    3. 第二關：純標題。
+    4. 第三關：原始全文。
+    """
     if not api_key: return None, "No API Key"
-    # Scholar API 結果通常很雜，且不一定有結構化作者，這裡維持僅標題比對
-    params = {"engine": "google_scholar", "q": title, "api_key": api_key, "num": 3}
-    try:
-        results = GoogleSearch(params).get_dict()
-        organic = results.get("organic_results", [])
-        for res in organic:
-            if _is_match(title, res.get("title", "")):
-                return res.get("link"), "match"
-        return None, "No exact match found"
-    except Exception as e: return None, str(e)
+    
+    # 內部搜尋小工具
+    def _do_search(query_string, match_mode):
+        try:
+            params = {"engine": "google_scholar", "q": query_string, "api_key": api_key, "num": 3}
+            results = GoogleSearch(params).get_dict()
+            organic = results.get("organic_results", [])
+            for res in organic:
+                res_title = res.get("title", "")
+                if _is_match(title, res_title):
+                    return res.get("link"), match_mode
+            return None, None
+        except Exception as e:
+            return None, f"Error: {e}"
+
+    # ==========================================
+    # 步驟 0: 智慧清洗作者 (針對您提到的混合狀況)
+    # ==========================================
+    valid_search_author = None
+    if author:
+        # 1. 先把 (et al), [et al], et al. 全部拿掉
+        cleaned = re.sub(r'(?i)[\(\[]?\bet\.?\s*al\.?[\)\]]?', '', author).strip()
+        
+        # 2. 清理乾淨後，把頭尾多餘的標點符號 (逗號、句號、分號) 修剪掉
+        # 這樣 "Smith, et al." 會變成 "Smith" (原本會剩下 "Smith,")
+        cleaned = cleaned.strip(' .,;()[]')
+        
+        if len(cleaned) > 1:
+            valid_search_author = cleaned
+
+    # ==========================================
+    # 步驟 1: 標題 + 作者 (最準確)
+    # ==========================================
+    # 狀況 A: 原本是 "Smith et al" -> 這裡會搜 "Title Smith" (成功!)
+    # 狀況 B: 原本是 "John Smith"  -> 這裡會搜 "Title John Smith" (更準!)
+    if valid_search_author:
+        link, status = _do_search(f'{title} {valid_search_author}', "match (Title+Author)")
+        if link: return link, status
+
+    # ==========================================
+    # 步驟 2: 純標題 (寬鬆補救)
+    # ==========================================
+    # 如果作者解析出來是空的，或第一關沒找到，自動退回這裡
+    link, status = _do_search(title, "match (Title Only)")
+    if link: return link, status
+
+    # ==========================================
+    # 步驟 3: 原始全文 (終極保底)
+    # ==========================================
+    if raw_text and len(raw_text) > 10:
+        link, status = _do_search(raw_text, "match (Raw Text Fallback)")
+        if link: return link, status
+
+    return None, "No match found after 3 attempts"
 
 def search_scholar_by_ref_text(ref_text, api_key, target_title=None):
     if not api_key: return None, "No API Key"

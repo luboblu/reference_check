@@ -154,9 +154,13 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
             return res
 
-    for api_func, step_name in [(lambda: search_openalex_by_title(search_query, first_author), "3. OpenAlex"),
-                                (lambda: search_s2_by_title(search_query, first_author), "4. Semantic Scholar"),
-                                (lambda: search_scholar_by_title(search_query, serpapi_key), "5. Google Scholar")]:
+    # 修改這裡的列表，將 Google Scholar 的 lambda 補上 first_author
+    for api_func, step_name in [(lambda: search_scholar_by_title(
+    search_query, 
+    serpapi_key, 
+    author=first_author,     # 傳入作者 (會被上面的邏輯自動清洗)
+    raw_text=raw_ref['text'] # 傳入全文 (給第三關用)
+), "5. Google Scholar")]:
         try:
             url, _ = api_func()
             if url:
