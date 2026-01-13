@@ -5,7 +5,8 @@ import pandas as pd
 import time
 import os
 import re
-import ast 
+import ast
+import difflib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 導入自定義模組
