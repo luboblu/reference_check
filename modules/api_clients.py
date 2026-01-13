@@ -202,4 +202,4 @@ def check_url_availability(url):
     try:
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
-    except: return False
+    except: return False  

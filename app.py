@@ -1,4 +1,4 @@
-# app.py (一鍵報表自動化版 - 標題補強地端版)
+# app.py (放寬版，1~5 API 找到即視為成功，Step 6 保留網址驗證)
 
 import streamlit as st
 import pandas as pd
@@ -41,7 +41,7 @@ st.markdown("""
 # ========== Session State ==========
 if "results" not in st.session_state: st.session_state.results = []
 
-# ========== [核心工具函數] ==========
+# ========== 核心函數 ==========
 def format_name_field(data):
     if not data: return None
     try:
@@ -59,17 +59,18 @@ def format_name_field(data):
         return "; ".join(names_list)
     except: return str(data)
 
-# --- refine_parsed_data 已加強版 ---
 def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
     raw_text = item.get('text', '').strip()
 
+    # 基礎符號清洗
     for key in ['doi', 'url', 'title', 'date']:
         if item.get(key) and isinstance(item[key], str):
             item[key] = item[key].strip(' ,.;)]}>')
 
     title = item.get('title', '')
-    
+
+    # 標題補救
     if not title or len(title) < 5:
         abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
         if abbr_match:
@@ -92,6 +93,7 @@ def refine_parsed_data(parsed_item):
                     if len(candidate) > 5:
                         item['title'] = candidate.strip(' .')
 
+    # DOI 提取
     url_val = item.get('url', '')
     if url_val:
         doi_match = re.search(r'(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)', url_val)
@@ -100,9 +102,8 @@ def refine_parsed_data(parsed_item):
 
     if item.get('authors'): item['authors'] = format_name_field(item['authors'])
     if item.get('editor'): item['editor'] = format_name_field(item['editor'])
-    
-    return item
 
+    return item
 
 def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_key):
     ref = refine_parsed_data(raw_ref)
@@ -131,42 +132,33 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             })
             return res
 
-    # 1. Crossref DOI
+    # 1~5. API 查到就成功（不再驗證）
     if doi:
-        meta, status = search_crossref_by_doi(doi, target_title=title)
+        meta, _ = search_crossref_by_doi(doi, target_title=title)
         if meta:
-            ok, url_type = verify_url_candidate(ref, meta["url"])
-            if ok:
-                res.update({
-                    "sources": {"Crossref (DOI)": meta["url"]},
-                    "found_at_step": "1. Crossref (DOI, Verified)"
-                })
-                return res
-
-    # 1b. Crossref Text
-    url, _ = search_crossref_by_text(search_query, first_author)
-    if url:
-        ok, url_type = verify_url_candidate(ref, url)
-        if ok:
             res.update({
-                "sources": {"Crossref": url},
-                "found_at_step": "1. Crossref (Search, Verified)"
+                "sources": {"Crossref (DOI)": meta["url"]},
+                "found_at_step": "1. Crossref (DOI)"
             })
             return res
 
-    # 2. Scopus
+    url, _ = search_crossref_by_text(search_query, first_author)
+    if url:
+        res.update({
+            "sources": {"Crossref": url},
+            "found_at_step": "1. Crossref (Search)"
+        })
+        return res
+
     if scopus_key:
         url, _ = search_scopus_by_title(search_query, scopus_key)
         if url:
-            ok, url_type = verify_url_candidate(ref, url)
-            if ok:
-                res.update({
-                    "sources": {"Scopus": url},
-                    "found_at_step": "2. Scopus (Verified)"
-                })
-                return res
+            res.update({
+                "sources": {"Scopus": url},
+                "found_at_step": "2. Scopus"
+            })
+            return res
 
-    # 3~5. Other APIs
     for api_func, step_name in [
         (lambda: search_openalex_by_title(search_query, first_author), "3. OpenAlex"),
         (lambda: search_s2_by_title(search_query, first_author), "4. Semantic Scholar"),
@@ -175,20 +167,18 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
         try:
             url, _ = api_func()
             if url:
-                ok, url_type = verify_url_candidate(ref, url)
-                if ok:
-                    res.update({
-                        "sources": {step_name.split(". ")[1]: url},
-                        "found_at_step": f"{step_name} (Verified)"
-                    })
-                    return res
+                res.update({
+                    "sources": {step_name.split(". ")[1]: url},
+                    "found_at_step": step_name
+                })
+                return res
         except:
             pass
 
     # 6. 原始網址（最低可信）
     if parsed_url and parsed_url.startswith("http"):
         if check_url_availability(parsed_url):
-            ok, url_type = verify_url_candidate(ref, parsed_url)
+            ok = verify_url_candidate(ref, {"url": parsed_url})
             if ok:
                 res.update({
                     "sources": {"Direct Link": parsed_url},
@@ -197,7 +187,7 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             else:
                 res.update({
                     "sources": {"Direct Link": parsed_url},
-                    "found_at_step": "6. Website (Alive, Not Verified)"
+                    "found_at_step": "6. Website (Alive)"
                 })
 
     return res
@@ -223,11 +213,9 @@ with st.sidebar:
 st.markdown('<div class="main-header">📚 學術引用自動化查核報表</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">整合多方資料庫 API，一鍵產出引文驗證結果與下載 CSV</div>', unsafe_allow_html=True)
 
-# 1. 輸入區
 st.markdown("### 📥 第一步：輸入引文內容")
 raw_input = st.text_area("請直接貼上參考文獻列表：", height=250, placeholder="例如：\nStyleTTS 2: Towards Human-Level Text-to-Speech...\nAIOS: LLM Agent Operating System...")
 
-# 2. 執行區
 if st.button("🚀 開始全自動核對並生成報表", type="primary", use_container_width=True):
     if not raw_input:
         st.warning("⚠️ 請先貼上文獻內容再執行。")
@@ -252,13 +240,16 @@ if st.button("🚀 開始全自動核對並生成報表", type="primary", use_co
             else:
                 st.error("❌ AnyStyle 解析異常，請檢查輸入內容。")
 
-# 3. 報表顯示與下載區
+# ========== 統計與報表 ==========
 if st.session_state.results:
     st.divider()
     st.markdown("### 📊 第二步：查核結果與報表下載")
     
     total_refs = len(st.session_state.results)
-    verified_db = sum(1 for r in st.session_state.results if r.get('found_at_step') and "6." not in r.get('found_at_step'))
+    verified_db = sum(
+        1 for r in st.session_state.results
+        if str(r.get("found_at_step", "")).startswith(("0.", "1.", "2.", "3.", "4.", "5."))
+    )
     failed_refs = total_refs - verified_db
     
     col1, col2, col3 = st.columns(3)
@@ -299,13 +290,13 @@ if st.session_state.results:
         
         if filter_option == "全部顯示":
             filtered_results.append(r)
-        elif filter_option == "✅ 資料庫驗證" and step and "6." not in step and "Failed" not in step:
+        elif filter_option == "✅ 資料庫驗證" and step and not step.startswith("6."):
             filtered_results.append(r)
-        elif filter_option == "🌐 網站有效來源" and "6." in step and "Failed" not in step:
+        elif filter_option == "🌐 網站有效來源" and step.startswith("6.") and "Failed" not in step:
             filtered_results.append(r)
         elif filter_option == "⚠️ 網站 (連線失敗)" and "Failed" in step:
             filtered_results.append(r)
-        elif filter_option == "❌ 未找到結果" and (not step or step == ""):
+        elif filter_option == "❌ 未找到結果" and not step:
             filtered_results.append(r)
 
     if not filtered_results:
