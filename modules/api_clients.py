@@ -76,7 +76,8 @@ def _is_match(query, result):
     if not query or not result: return False
     c_q = clean_title(query)
     c_r = clean_title(result)
-    
+    if not c_q or not c_r: return False
+        
     # --- 新增：強效去噪 ---
     # 移除常見的非標題字眼，避免它們導致比對失敗
     def remove_noise(text):
@@ -97,7 +98,7 @@ def _is_match(query, result):
 
     # 2. 相似度比對 (維持原樣)
     ratio = SequenceMatcher(None, c_q, c_r).ratio()
-    if ratio >= 0.8: return True  # 建議稍微調降到 0.8 以容忍少許差異
+    if ratio >= 0.65: return True  # 建議稍微調降到 0.8 以容忍少許差異
     
     # 3. 關鍵字比對
     q_words = set(c_q.split())
@@ -353,4 +354,5 @@ def check_url_availability(url):
     try:
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
+
     except: return False
