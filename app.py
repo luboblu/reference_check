@@ -63,6 +63,14 @@ def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
     raw_text = item.get('text', '').strip()
 
+    # 0113新增網址的特殊處理
+    raw_text = item.get('text', '')
+    if not item.get('url'):
+        # 強制用正則表達式從全文找網址
+        url_match = re.search(r'(https?://[^\s]+)', raw_text)
+        if url_match:
+            item['url'] = url_match.group(1).strip(' .')
+
     # 1. 基礎符號清洗
     for key in ['doi', 'url', 'title', 'date']:
         if item.get(key) and isinstance(item[key], str):
