@@ -32,41 +32,84 @@ def _read_key_file(filename):
         return None
 
 # ========== [核心] 1. 作者比對邏輯 (新增) ==========
+# 修改 modules/api_clients.py 中的 _check_author_match
+
 def _check_author_match(query_author, result_authors_list):
     """
-    寬鬆比對作者姓氏
-    :param query_author: 使用者輸入的作者字串 (例如 "Smith, J." 或 "Li")
-    :param result_authors_list: API 回傳的作者列表 (List of strings or dicts)
+    嚴格比對函式：專門解決 Zhang, X. 與 L. Zhang 被誤判為同一人的問題。
+    邏輯：
+    1. 拆解輸入作者的 姓 (Family) 與 名 (Given)。
+    2. 針對常見姓氏 (Zhang, Li 等)，強制檢查名字首字母是否一致。
+    3. 如果首字母不同 (X vs L)，直接視為不同人。
     """
-    # 如果使用者沒提供作者，或是輸入的作者字串太短(可能解析失敗)，就跳過檢查(視為通過)
     if not query_author or len(query_author) < 2:
-        return True
+        return True 
     
-    # 提取查詢作者的姓氏 (假設格式為 "Family, Given" 或 "Family Given")
-    # 簡單策略：取逗號前或空格前的第一個詞作為姓氏
-    q_family = re.split(r'[, ]', query_author.strip())[0].lower().strip()
+    query_author = query_author.lower().strip()
     
-    # 如果姓氏太短 (例如 "Li", "Ng")，比對時要小心，但這裡先採寬鬆策略
-    if not q_family: return True
+    # --- 步驟 1: 解析您的輸入 (例如: "Zhang, X.") ---
+    # 預設變數
+    q_family = ""
+    q_given_initial = ""
 
-    # 處理 API 回傳的作者列表
-    formatted_results = []
-    for auth in result_authors_list:
-        if isinstance(auth, dict):
-            # 針對 Crossref/Scopus 常見的 dict 結構 {'family': 'Smith', 'given': 'John'}
-            family = auth.get('family') or auth.get('surname') or auth.get('ce:surname') or ''
-            name = auth.get('name') or auth.get('authname') or '' # Semantic Scholar 有時是 'name'
-            formatted_results.append(str(family).lower())
-            formatted_results.append(str(name).lower())
-        else:
-            # 純字串
-            formatted_results.append(str(auth).lower())
+    if "," in query_author:
+        # 格式: "Zhang, X." -> 逗號前是姓，逗號後是名
+        parts = query_author.split(",")
+        q_family = parts[0].strip()
+        # 取名字的第一個字母作為 Initial (例如 "X." -> "x")
+        if len(parts) > 1 and parts[1].strip():
+            q_given_initial = parts[1].strip()[0] 
+    else:
+        # 格式: "X. Zhang" -> 最後一個字是姓
+        parts = query_author.split()
+        q_family = parts[-1].strip()
+        if len(parts) > 1:
+            q_given_initial = parts[0].strip()[0]
+
+    # 定義必須嚴格檢查的大姓
+    common_names = ['wang', 'chen', 'lee', 'li', 'zhang', 'liu', 'lin', 'yang', 'huang', 'wu', 'smith', 'jones']
     
-    # 檢查：只要查詢的姓氏出現在 API 結果的任何一個作者名字中，就算 Pass
-    for res_str in formatted_results:
-        if q_family in res_str:
+    # 判斷是否為大姓 (如果是，我們就一定要對首字母)
+    is_common_name = (q_family in common_names)
+
+    # --- 步驟 2: 檢查系統抓到的作者列表 (例如: ["L. Zhang", "L. Xu", ...]) ---
+    for auth in result_authors_list:
+        r_family = ""
+        r_given_initial = ""
+        r_full = ""
+
+        # 解析 API 回傳的作者格式
+        if isinstance(auth, dict):
+            r_family = str(auth.get('family') or auth.get('surname') or '').lower()
+            given = str(auth.get('given') or auth.get('initials') or '').lower()
+            if given: r_given_initial = given[0]
+            r_full = f"{given} {r_family}".strip()
+        else:
+            r_full = str(auth).lower()
+            # 簡單拆解字串 (假設 "L. Zhang")
+            if " " in r_full:
+                r_family = r_full.split()[-1] # 抓 "zhang"
+                r_given_initial = r_full.split()[0][0] # 抓 "l"
+            else:
+                r_family = r_full
+
+        # --- 步驟 3: 關鍵比對 (Zhang vs Zhang) ---
+        
+        # 先比對姓氏
+        if q_family == r_family or q_family in r_full:
+            
+            # 如果是大姓 (Zhang)，且雙方都有名字首字母 -> 進行嚴格檢查！
+            if is_common_name and q_given_initial and r_given_initial:
+                
+                # 這裡就是抓出 "X" != "L" 的關鍵！
+                if q_given_initial != r_given_initial:
+                    # 雖然姓對了，但名字首字母不對，視為「撞名」，跳過這個作者
+                    continue 
+            
+            # 如果通過了上面的檢查 (或者是冷門姓氏不用查那麼細)，才算找到
             return True
             
+    # 找遍了列表裡的所有人，沒有一個符合「姓氏對 + 首字母也對」的
     return False
 
 # ========== [核心] 2. 標題比對邏輯 (包含您之前的寬鬆優化) ==========
@@ -219,66 +262,78 @@ def search_scopus_by_title(title, api_key, author=None):
 
 def search_scholar_by_title(title, api_key, author=None, raw_text=None):
     """
-    階層式搜尋策略 (適應混合格式)：
-    1. 清洗作者：
-       - 有 "et al" -> 刪除 "et al" 保留人名。
-       - 是全名 -> 保留原樣。
-    2. 第一關：標題 + 清洗後的人名。
-    3. 第二關：純標題。
-    4. 第三關：原始全文。
+    階層式搜尋策略 (適應混合格式) - 修正版：
+    1. 增加搜尋筆數至 10 筆，避免漏抓。
+    2. 在標題補救與全文補救階段，強制檢查作者，避免抓錯人。
     """
     if not api_key: return None, "No API Key"
     
-    # 內部搜尋小工具
-    def _do_search(query_string, match_mode):
+    # 內部搜尋小工具 (已升級支援作者驗證)
+    def _do_search(query_string, match_mode, required_author=None):
         try:
-            params = {"engine": "google_scholar", "q": query_string, "api_key": api_key, "num": 3}
+            params = {"engine": "google_scholar", "q": query_string, "api_key": api_key, "num": 10}
             results = GoogleSearch(params).get_dict()
             organic = results.get("organic_results", [])
+            
             for res in organic:
                 res_title = res.get("title", "")
+                
                 if _is_match(title, res_title):
-                    return res.get("link"), match_mode
+                    # 1. 作者驗證 (維持剛剛給您的修正)
+                    if required_author:
+                        pub_info = res.get("publication_info", {})
+                        summary = pub_info.get("summary", "")
+                        extracted_authors_str = summary.split(" - ")[0] if " - " in summary else summary
+                        res_authors_list = [a.strip() for a in extracted_authors_str.split(",")]
+                        
+                        if not _check_author_match(required_author, res_authors_list):
+                            continue
+
+                    # 2. [關鍵修正] 處理沒有連結的情況
+                    # 如果有 link 就回傳 link，如果沒有 (例如純引用)，就回傳 SerpAPI 的 result_id 或標記
+                    found_link = res.get("link")
+                    if found_link:
+                        return found_link, match_mode
+                    else:
+                        # 雖然沒有連結，但我們確實找到了！回傳一個標記字串
+                        return "Citation Record (No Direct Link)", match_mode + " [Citation Only]"
+            
             return None, None
         except Exception as e:
             return None, f"Error: {e}"
 
     # ==========================================
-    # 步驟 0: 智慧清洗作者 (針對您提到的混合狀況)
+    # 步驟 0: 智慧清洗作者
     # ==========================================
     valid_search_author = None
     if author:
         # 1. 先把 (et al), [et al], et al. 全部拿掉
         cleaned = re.sub(r'(?i)[\(\[]?\bet\.?\s*al\.?[\)\]]?', '', author).strip()
-        
-        # 2. 清理乾淨後，把頭尾多餘的標點符號 (逗號、句號、分號) 修剪掉
-        # 這樣 "Smith, et al." 會變成 "Smith" (原本會剩下 "Smith,")
+        # 2. 清理乾淨後，把頭尾多餘的標點符號修剪掉
         cleaned = cleaned.strip(' .,;()[]')
-        
         if len(cleaned) > 1:
             valid_search_author = cleaned
 
     # ==========================================
-    # 步驟 1: 標題 + 作者 (最準確)
+    # 步驟 1: 標題 + 作者 (最準確，不需額外驗證)
     # ==========================================
-    # 狀況 A: 原本是 "Smith et al" -> 這裡會搜 "Title Smith" (成功!)
-    # 狀況 B: 原本是 "John Smith"  -> 這裡會搜 "Title John Smith" (更準!)
+    # 這裡搜尋時已經把作者加進去了，所以 Google 回傳的通常是對的，這裡維持原樣
     if valid_search_author:
         link, status = _do_search(f'{title} {valid_search_author}', "match (Title+Author)")
         if link: return link, status
 
     # ==========================================
-    # 步驟 2: 純標題 (寬鬆補救)
+    # 步驟 2: 純標題 (寬鬆補救) -> [修正] 加入作者驗證
     # ==========================================
-    # 如果作者解析出來是空的，或第一關沒找到，自動退回這裡
-    link, status = _do_search(title, "match (Title Only)")
+    # 搜尋時只用標題，但篩選結果時「必須」檢查作者 (如果有提供作者的話)
+    link, status = _do_search(title, "match (Title Only)", required_author=valid_search_author)
     if link: return link, status
 
     # ==========================================
-    # 步驟 3: 原始全文 (終極保底)
+    # 步驟 3: 原始全文 (終極保底) -> [修正] 加入作者驗證
     # ==========================================
     if raw_text and len(raw_text) > 10:
-        link, status = _do_search(raw_text, "match (Raw Text Fallback)")
+        link, status = _do_search(raw_text, "match (Raw Text Fallback)", required_author=valid_search_author)
         if link: return link, status
 
     return None, "No match found after 3 attempts"

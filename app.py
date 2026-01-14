@@ -255,7 +255,7 @@ if st.button("🚀 開始全自動核對並生成報表", type="primary", use_co
                 status.write(f"正在連線各大學術資料庫 (共 {len(struct_list)} 筆)...")
                 progress_bar = st.progress(0)
                 results_buffer = []
-                with ThreadPoolExecutor(max_workers=5) as executor:
+                with ThreadPoolExecutor(max_workers=20) as executor:
                     futures = {executor.submit(check_single_task, i+1, r, local_df, target_col, scopus_key, serpapi_key): i for i, r in enumerate(struct_list)}
                     for i, future in enumerate(as_completed(futures)):
                         results_buffer.append(future.result())
